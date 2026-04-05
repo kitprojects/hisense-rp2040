@@ -142,3 +142,20 @@ E5 error when triggered. Location: A1 22 byte 3, bit 7 (1=normal, 0=water high).
 3. **Display shows temps while we control INV** - it reads A3 responses off the bus, giving free monitoring
 4. **All INV temp sensors are linear** - just different gain/offset per sensor
 5. **Discharge sensor is direct reading** - no scaling needed
+
+## Float Switches
+
+Located in A3 21 byte 3 (INV reports to DISP):
+
+| Bit | Value | Meaning |
+|-----|-------|---------|
+| 3 | 0x08 | Float switch level 1 triggered |
+| 4 | 0x10 | Float switch level 2 triggered |
+| - | 0x00 | Both switches normal (dry) |
+
+## Cooling Mode Specifics
+
+In A1 21 byte 5:
+- 0x10 = heating mode setting
+- 0x20 = cooling mode idle
+- 0x24 = cooling mode with slinger (bit 2 = 0x04 may be slinger enable)
