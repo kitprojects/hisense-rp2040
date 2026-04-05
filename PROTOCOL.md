@@ -10,6 +10,37 @@ This document describes the communication protocol between the DISP (display/ind
 - NFET level shifters on both sides
 - 16-byte messages with simple sum checksum
 
+## RP2040 Hardware Setup
+
+### Pin Configuration
+| Pin | Function | Direction | Notes |
+|-----|----------|-----------|-------|
+| GP0 | TX_DISP | Output | To DISP side (active high, no inversion) |
+| GP1 | RX_DISP | Input | From DISP side (active high, no inversion) |
+| GP4 | TX_INV | Output | To INV side (active low, inverted in PIO) |
+| GP5 | RX_INV | Input | From INV side (active low, internal pullup, inverted in PIO) |
+
+### Level Shifting
+- DISP side: 12V logic, use voltage divider or level shifter to 3.3V
+- INV side: 0V active, 8.5V idle - NFET open drain with pullup
+- RP2040 handles inversion in PIO for INV side
+
+### PIO Allocation
+**PIO0 (pio_pt):**
+- SM0: Passthrough DISP→INV
+- SM1: Passthrough INV→DISP  
+- SM2: UART TX to INV (EMU mode)
+
+**PIO1 (pio_uart):**
+- SM0: UART RX from DISP (DMA drained)
+- SM1: UART RX from INV (inverted)
+
+### DMA
+- Channel auto-claimed for DISP RX
+- 256-entry ring buffer (1KB aligned)
+- Hardware ring wrap at bit 10
+- Continuous drain, polled by process_disp_dma()
+
 ## Message Types
 
 ### DISP → INV (A1 messages)
@@ -159,6 +190,26 @@ E5 error when triggered. Location: A1 22 byte 3, bit 7 (1=normal, 0=water high).
 3. **Display shows temps while we control INV** - it reads A3 responses off the bus, giving free monitoring
 4. **All INV temp sensors are linear** - just different gain/offset per sensor
 5. **Discharge sensor is direct reading** - no scaling needed
+6. **DMA essential for EMU mode** - polling FIFO during TX/RX blocking loops causes overflow
+
+## USB Commands (115200 baud)
+
+| Command | Description |
+|---------|-------------|
+| `?` | Print status: version, mode, run state, slot A/B contents |
+| `M` | Toggle mode: PT (passthrough) ↔ EMU (emulator) |
+| `X` | Stop emulator (stays in EMU mode but stops TX) |
+| `R` | Restart emulator |
+| `!` | Reboot to USB bootloader (for flashing) |
+| `A xx xx...` | Set slot A (16 hex bytes, auto-checksum if 15 provided) |
+| `B xx xx...` | Set slot B (16 hex bytes, auto-checksum if 15 provided) |
+
+### EMU Mode Operation
+1. Send `M` to enter EMU mode (disables passthrough, waits for zeros)
+2. When INV sends zeros (power cycled or lost DISP), emulator auto-starts
+3. Alternates sending slot A (A1 21) and slot B (A1 22)
+4. Receives and prints INV responses (I> prefix)
+5. DMA continues capturing DISP messages (D> prefix) for monitoring
 
 ## Float Switches
 
