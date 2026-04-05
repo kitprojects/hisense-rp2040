@@ -1,0 +1,30 @@
+; Instant GPIO passthrough - copies input pin to output pin
+; 2 cycles = 16ns at 125MHz, way faster than 833us bit time
+
+.program passthrough
+.wrap_target
+    mov x, pins     ; read IN pins to X
+    mov pins, x     ; write X to OUT pins
+.wrap
+
+% c-sdk {
+static inline void passthrough_program_init(PIO pio, uint sm, uint offset, uint in_pin, uint out_pin) {
+    pio_sm_config c = passthrough_program_get_default_config(offset);
+    
+    // Input pin
+    sm_config_set_in_pins(&c, in_pin);
+    pio_gpio_init(pio, in_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, in_pin, 1, false);
+    
+    // Output pin (OUT pins for mov pins, X)
+    sm_config_set_out_pins(&c, out_pin, 1);
+    pio_gpio_init(pio, out_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, out_pin, 1, true);
+    
+    // Run at full speed
+    sm_config_set_clkdiv(&c, 1.0);
+    
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

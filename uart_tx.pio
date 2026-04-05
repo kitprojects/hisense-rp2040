@@ -1,0 +1,35 @@
+.program uart_tx
+
+; Normal UART TX (idle HIGH, start bit LOW)
+; Shift OSR right, autopull 8 bits
+; Pin starts HIGH (idle)
+
+.wrap_target
+    pull block          ; wait for data
+    set pins, 0  [7]    ; start bit (LOW)
+    set x, 7            ; 8 data bits
+bitloop:
+    out pins, 1         ; output data bit
+    jmp x-- bitloop [6] ; loop with delay
+    set pins, 1  [7]    ; stop bit (HIGH)
+.wrap
+
+% c-sdk {
+static inline void uart_tx_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
+    pio_sm_config c = uart_tx_program_get_default_config(offset);
+    
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+    gpio_put(pin, 1);  // idle HIGH
+    
+    sm_config_set_set_pins(&c, pin, 1);
+    sm_config_set_out_pins(&c, pin, 1);
+    sm_config_set_out_shift(&c, true, true, 8);  // shift right, autopull 8
+    
+    float div = (float)clock_get_hz(clk_sys) / (8 * baud);
+    sm_config_set_clkdiv(&c, div);
+    
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

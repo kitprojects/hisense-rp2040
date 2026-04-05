@@ -1,0 +1,34 @@
+; UART RX for normal signal (idle=high, start=low)
+; 8N1, uses autopush after 8 bits
+
+.program uart_rx
+
+start:
+    wait 0 pin 0        ; wait for start bit (low)
+    set x, 7    [10]    ; 8 bits, delay to middle of first data bit
+bitloop:
+    in pins, 1          ; sample bit (autopush triggers after 8 bits)
+    jmp x-- bitloop [6]
+    ; autopush already fired, just check stop bit and loop
+    jmp pin start       ; stop bit HIGH = good, go wait for next
+    ; stop bit was LOW = framing error, but byte already pushed
+    jmp start
+
+% c-sdk {
+static inline void uart_rx_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
+    pio_sm_config c = uart_rx_program_get_default_config(offset);
+    
+    sm_config_set_in_pins(&c, pin);
+    sm_config_set_jmp_pin(&c, pin);
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+    
+    sm_config_set_in_shift(&c, true, true, 8);  // shift right, autopush at 8
+    
+    float div = (float)clock_get_hz(clk_sys) / (8 * baud);
+    sm_config_set_clkdiv(&c, div);
+    
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
