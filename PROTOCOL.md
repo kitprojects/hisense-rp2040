@@ -25,6 +25,92 @@ This document describes the communication protocol between the DISP (display/ind
 - INV side: 0V active, 8.5V idle - NFET open drain with pullup
 - RP2040 handles inversion in PIO for INV side
 
+### PHY Circuit (Ternary Bus Interface)
+
+**System params:** 12V inverter pullup through 1.4kΩ, display biases to 8.6V, TX pulls to 0V
+
+**RX_DISP** - read display output (GP1)
+```
+Signal: 8.6V (active) vs 12V (idle)
+Output: 3.24V (HIGH) vs 0V (LOW)
+
+       12V
+        │
+    [PFET source]
+        │
+SI_DISP─┤gate
+        │
+    [PFET drain]
+        │
+       27k
+        ├───> output (to GPIO)
+       10k
+        │
+       GND
+```
+
+**TX_INV** - write to inverter, emulate display (GP4)
+```
+Signal: 8.43V (active) vs 12V (idle)
+Input: GPIO HIGH = pull to 8.6V, GPIO LOW = release
+
+SI_INV──[NFET drain]
+              │
+           [NFET source]
+              │
+            3.3k
+              │
+             GND
+
+GPIO──┬──[NFET gate]
+      │
+     10k
+      │
+     GND
+```
+
+**RX_INV** - read inverter output (GP5)
+```
+Signal: 0V (active) vs 8.6V/12V (idle)
+Output: 3.3V vs 0V (ACTIVE LOW / INVERTED)
+
+SI_INV──10k──┬──[NFET gate]
+             │
+            10k
+             │
+            GND
+
+GPIO (internal pullup)──[NFET drain]
+                             │
+                        [NFET source]
+                             │
+                            GND
+```
+
+**TX_DISP** - write to display, emulate inverter (GP0)
+```
+Signal: 0V (active) vs 12V (idle)
+Input: GPIO HIGH = pull to 0V, GPIO LOW = release
+
+       12V
+        │
+       1.4k (external or use existing inverter pullup)
+        │
+SI_DISP─┴──[NFET drain]
+                │
+           [NFET source]
+                │
+               GND
+
+GPIO──┬──[NFET gate]
+      │
+     10k
+      │
+     GND
+```
+
+**BOM:** 3x NFET + 1x PFET (or 4x NFET with different RX_DISP topology)
+
 ### PIO Allocation
 **PIO0 (pio_pt):**
 - SM0: Passthrough DISP→INV
