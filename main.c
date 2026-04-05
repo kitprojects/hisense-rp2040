@@ -13,9 +13,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include "pico/stdlib.h"
+#include "pico/bootrom.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
+#include "hardware/dma.h"
 #include "passthrough.pio.h"
 #include "uart_rx.pio.h"
 #include "uart_rx_inv.pio.h"
@@ -43,9 +45,80 @@ static uint8_t rx_buf[MSG_LEN];
 static int mode = 0;  // 0=passthrough, 1=emulator
 static bool emulator_running = false;
 
+// Forward declaration
+static void print_msg(const char *prefix, const uint8_t *msg, int len);
+
+// DMA Ring Buffer for DISP UART RX
+#define DISP_BUF_SIZE 256
+#define DISP_BUF_BYTES (DISP_BUF_SIZE * 4)
+
+static uint32_t disp_dma_buf[DISP_BUF_SIZE] __attribute__((aligned(DISP_BUF_BYTES)));
+static int disp_dma_chan = -1;
+static uint32_t disp_read_idx = 0;
+static uint8_t disp_msg_buf[MSG_LEN];
+static int disp_msg_idx = 0;
+
+static void init_disp_dma(void) {
+    disp_dma_chan = dma_claim_unused_channel(true);
+    
+    dma_channel_config c = dma_channel_get_default_config(disp_dma_chan);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+    channel_config_set_read_increment(&c, false);
+    channel_config_set_write_increment(&c, true);
+    channel_config_set_ring(&c, true, 10);  // wrap at 1024 bytes
+    channel_config_set_dreq(&c, pio_get_dreq(pio_uart, 0, false));
+    
+    dma_channel_configure(
+        disp_dma_chan,
+        &c,
+        disp_dma_buf,
+        &pio_uart->rxf[0],
+        UINT32_MAX,
+        true
+    );
+}
+
+static void process_disp_dma(void) {
+    uint32_t write_addr = dma_channel_hw_addr(disp_dma_chan)->write_addr;
+    uint32_t buf_base = (uint32_t)disp_dma_buf;
+    
+    if (write_addr < buf_base || write_addr >= buf_base + DISP_BUF_BYTES) {
+        return;
+    }
+    
+    uint32_t write_idx = (write_addr - buf_base) / 4;
+    uint32_t available = (write_idx - disp_read_idx + DISP_BUF_SIZE) % DISP_BUF_SIZE;
+    
+    // Overflow: snap forward if DMA lapped us
+    if (available > DISP_BUF_SIZE - 8) {
+        disp_read_idx = (write_idx + 1) % DISP_BUF_SIZE;
+        disp_msg_idx = 0;
+        return;
+    }
+    
+    while (disp_read_idx != write_idx) {
+        uint32_t word = disp_dma_buf[disp_read_idx];
+        uint8_t byte = word >> 24;
+        disp_read_idx = (disp_read_idx + 1) % DISP_BUF_SIZE;
+        
+        if (byte == 0xA1) {
+            disp_msg_idx = 0;
+        }
+        
+        disp_msg_buf[disp_msg_idx++] = byte;
+        if (disp_msg_idx >= MSG_LEN) {
+            print_msg("D>", disp_msg_buf, MSG_LEN);
+            disp_msg_idx = 0;
+        }
+    }
+}
+
 static void tx_byte(uint8_t byte) {
     pio_sm_put_blocking(pio_pt, 2, byte);
-    sleep_us(BYTE_TIME_US + 500);
+    uint32_t end = time_us_32() + BYTE_TIME_US + 500;
+    while (time_us_32() < end) {
+        process_disp_dma();
+    }
 }
 
 static void tx_message(const uint8_t *msg, int len) {
@@ -57,6 +130,7 @@ static void tx_message(const uint8_t *msg, int len) {
 static int rx_byte_timeout(uint32_t timeout_us) {
     uint32_t start = time_us_32();
     while (pio_sm_is_rx_fifo_empty(pio_uart, 1)) {
+        process_disp_dma();
         if (time_us_32() - start > timeout_us) return -1;
     }
     uint8_t byte = pio_sm_get(pio_uart, 1) >> 24;
@@ -173,8 +247,11 @@ int main() {
     uint uart_inv_offset = pio_add_program(pio_uart, &uart_rx_inv_program);
     uart_rx_inv_program_init(pio_uart, 1, uart_inv_offset, PIN_RX_INV, BAUD_RATE);
     
+    // Start DMA to continuously drain DISP RX into ring buffer
+    init_disp_dma();
+    
     sleep_ms(2000);
-    printf("BOOT v9\n");
+    printf("BOOT v10-dma\n");
     printf("Mode: %s\n", mode ? "EMU" : "PT");
     fflush(stdout);
     
@@ -190,28 +267,26 @@ int main() {
             memcpy(tx_buf, (cycle % 2 == 0) ? slot_a : slot_b, MSG_LEN);
             
             tx_message(tx_buf, MSG_LEN);
+            process_disp_dma();  // drain while TX
+            
             int len = rx_message(rx_buf, 500000);
+            process_disp_dma();  // drain after RX
             
             if (len > 0) {
                 print_msg("I>", rx_buf, len);
                 fflush(stdout);
             }
             
-            sleep_ms(50);
+            // Busy-wait with DMA drain instead of sleep
+            uint32_t wait_start = time_us_32();
+            while (time_us_32() - wait_start < 50000) {
+                process_disp_dma();
+            }
             cycle++;
         } else {
             // Capture and print both directions
-            while (!pio_sm_is_rx_fifo_empty(pio_uart, 0)) {
-                static uint8_t disp_buf[MSG_LEN];
-                static int disp_idx = 0;
-                uint8_t raw = pio_sm_get(pio_uart, 0) >> 24;
-                disp_buf[disp_idx++] = raw;
-                if (disp_idx >= MSG_LEN) {
-                    print_msg("D>", disp_buf, MSG_LEN);
-                    fflush(stdout);
-                    disp_idx = 0;
-                }
-            }
+            // DISP: use DMA buffer (DMA owns the FIFO)
+            process_disp_dma();
             
             while (!pio_sm_is_rx_fifo_empty(pio_uart, 1)) {
                 static uint8_t inv_buf[MSG_LEN];
@@ -258,15 +333,26 @@ int main() {
                     } else if (c == 'M' || c == 'm') {
                         if (emulator_running) stop_emulator();
                         mode = 1 - mode;
-                        printf("Mode: %s\n", mode ? "EMU" : "PT");
+                        if (mode == 1) {
+                            // Disable passthrough DISP→INV so INV sees zeros
+                            pio_sm_set_enabled(pio_pt, 0, false);
+                            printf("Mode: EMU (waiting for zeros)\n");
+                            sleep_ms(2000);  // let system settle
+                        } else {
+                            // Re-enable passthrough
+                            pio_sm_set_enabled(pio_pt, 0, true);
+                            printf("Mode: PT\n");
+                        }
                     } else if (c == 'X' || c == 'x') {
                         if (emulator_running) stop_emulator();
                     } else if (c == 'R' || c == 'r') {
                         if (mode == 1 && !emulator_running) start_emulator();
                     } else if (c == '?') {
-                        printf("v9 Mode:%s Run:%d\n", mode ? "EMU" : "PT", emulator_running);
+                        printf("v10-dma Mode:%s Run:%d\n", mode ? "EMU" : "PT", emulator_running);
                         print_msg("A:", slot_a, MSG_LEN);
                         print_msg("B:", slot_b, MSG_LEN);
+                    } else if (c == '!') {
+                        reset_usb_boot(0, 0);
                     }
                     fflush(stdout);
                 }

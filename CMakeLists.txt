@@ -21,6 +21,7 @@ target_link_libraries(hisense_sniffer
     pico_stdlib
     hardware_gpio
     hardware_pio
+    hardware_dma
 )
 
 pico_enable_stdio_usb(hisense_sniffer 1)

@@ -77,11 +77,22 @@ Byte:  0    1    2    3    4    5    6    7    8    9   10   11   12   13   14  
 
 ### Methodology
 Water bath calibration using food thermometer as reference:
-- Cold: ~15-17°C
+- Cold: ~15-20°C
 - Room: ~25-30°C  
-- Hot: ~60-90°C (boiling water)
+- Hot: ~45-90°C
 
 ### Results
+
+**Indoor Air (D> A1 22 byte 5):**
+| Actual °C | Byte | Calculated °C | Error |
+|-----------|------|---------------|-------|
+| 19.7 | 80 (0x50) | 20.0 | +0.3 |
+| 45.4 | 131 (0x83) | 45.5 | +0.1 |
+
+Formula: `temp_C = (byte - 40) / 2`
+
+**Indoor Coil (D> A1 22 byte 6):**
+Same encoding as indoor air: `temp_C = (byte - 40) / 2`
 
 **Outdoor Air (A3 22 byte 4):**
 | Actual °C | Byte | Calculated °C | Error |
@@ -127,7 +138,13 @@ Formula: `temp_C ≈ byte` (direct reading)
 ## Hardware Notes
 
 ### Indoor Sensors
-Indoor air and indoor coil sensors are on the DISPLAY unit, not INV. In EMU mode we only see INV sensors. Would need passthrough mode or firmware modification to read display-side sensors.
+Indoor air and indoor coil sensors are on the DISPLAY unit, sent via A1 22. 
+In EMU mode, DMA captures D> messages so we can still read DISP-side temps.
+
+### Indoor Fan RPM
+**Not reported in protocol.** INV controls indoor fan speed via A1 21 byte 9 (command), but no RPM feedback exists in any A3 response. Tested by changing fan speed and watching all A3 bytes - no field changed.
+
+Indoor fan is closed-loop controlled internally by INV, so commanded speed ≈ actual speed. Can verify with physical measurement once to get scaling factor if needed.
 
 ### Water Slinger
 Separate motor, control byte not yet identified. Testing bytes 8, 11-14 in A1 21.
